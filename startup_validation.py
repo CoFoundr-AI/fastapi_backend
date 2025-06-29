@@ -10,6 +10,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from database import get_db_connection
 from auth import get_current_user
+from dateutil import parser as date_parser
 
 # Load environment variables
 load_dotenv()
@@ -269,7 +270,12 @@ async def omnidim_webhook(payload: OmnidimWebhookPayload):
     """Webhook endpoint for Omnidim call status updates"""
     conn = await get_db_connection()
     try:
-        # Update call status and extracted info in database
+        # Parse call_date robustly (handles both correct and incorrect formats)
+        try:
+            completed_at = date_parser.parse(payload.call_date)
+        except Exception:
+            completed_at = datetime.utcnow()
+
         await conn.execute("""
             UPDATE validation_calls 
             SET 
@@ -282,7 +288,7 @@ async def omnidim_webhook(payload: OmnidimWebhookPayload):
         """,
             payload.call_report.full_conversation if payload.call_report else None,
             json.dumps(payload.call_report.extracted_variables) if payload.call_report and payload.call_report.extracted_variables else None,
-            datetime.strptime(payload.call_date, "%Y-%m-%d %H:%M:%S"),
+            completed_at,
             f"omnidim-{payload.call_id}"
         )
         return {"status": "success", "message": "Webhook processed successfully"}
