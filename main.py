@@ -9,6 +9,7 @@ import asyncpg
 import os
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
+from database import get_db_connection
 
 # Load environment variables
 load_dotenv()
@@ -18,27 +19,9 @@ security = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Configuration
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = int(os.getenv("DB_PORT", 5432))
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_SSL_MODE = os.getenv("DB_SSL_MODE", "require")
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", 30))
-
-# Database connection
-async def get_db_connection():
-    """Create and return a database connection"""
-    return await asyncpg.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        database=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        ssl=DB_SSL_MODE
-    )
 
 # Pydantic models
 class FounderRegister(BaseModel):
@@ -91,12 +74,17 @@ async def lifespan(app: FastAPI):
     """)
     await conn.close()
     print("Database initialized successfully!")
+    
+    # Setup validation module after app is created
+    from startup_validation import setup_validation_module
+    await setup_validation_module()
+    
     yield
 
 # FastAPI app
 app = FastAPI(
     title="CoFoundr.AI Backend",
-    description="Backend API for CoFoundr.AI - Connecting Startup Founders",
+    description="Backend API for CoFoundr.AI - Connecting Startup Founders with AI-Powered Validation",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -109,6 +97,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include validation router after app is created
+from startup_validation import router as validation_router
+app.include_router(validation_router)
+
+# Import get_current_user function from auth.py
+from auth import get_current_user
 
 # Utility functions
 def hash_password(password: str) -> str:
@@ -126,30 +121,6 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return encoded_jwt
-
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(credentials.credentials, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-    
-    conn = await get_db_connection()
-    founder = await conn.fetchrow(
-        "SELECT * FROM founders WHERE email = $1 AND is_active = TRUE", email
-    )
-    await conn.close()
-    
-    if founder is None:
-        raise credentials_exception
-    return founder
 
 # Routes
 @app.get("/")
